@@ -1,0 +1,235 @@
+---
+title: "Credit Card Fraud Detection - Original"
+author: "Yaohong Liang (yaohong2@illinois.edu)"
+date: "11/15/2020"
+output:
+  html_document: 
+    theme: default
+    toc: yes
+---
+
+```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
+```
+
+```{r, load-packages, include = FALSE}
+# load packages
+library(caret)
+library(PRROC)
+```
+
+```{r make-data, warning = FALSE, message = FALSE}
+# read data and subset
+#source("make-data.R")
+```
+
+```{r read-full-data, warning = FALSE, message = FALSE}
+# read full data
+cc = data.table::fread("data/cc.csv.gz")
+```
+
+```{r read-subset-data, warning = FALSE, message = FALSE}
+# read subset of data
+# cc_sub = data.table::fread("data/cc-sub.csv")
+```
+
+***
+
+## Abstract
+
+> This analysis aims for developing a model for detecting whether a transcation is fraud or not. Relevent features are selected for model fitting and data validation strategies including dealing with missing values are applied to the imbalanced raw datasets. Gradient boosting machine and random forest algorithms are used for fitting models. By comparing the area under the precision-recall curves, ranfrom forest is selected as the final model and it results to approximately 93% of true positive rate for detecting fraud. However, more optimizations strategies are needed for future analysis.
+
+***
+
+## Introduction
+
+It is important that credit card companies are able to recognize fraudulent credit card transactions so that customers are not charged for items that they did not purchase. In this analysis, we will develop a model to detect whether a transaction is fraudulent or not.
+
+***
+
+## Methods
+
+### Data
+
+The credit card data comes from *Kaggle*. The dataset itself contains transactions made by credit cards in September 2013 by european cardholders. This dataset presents transactions that occurred in two days, where we have 492 frauds out of 284,807 transactions. The dataset is highly unbalanced, the positive class (frauds) account for 0.172% of all transactions.
+
+It contains only numerical input variables which are the result of a PCA transformation. Unfortunately, due to confidentiality issues, we cannot get the original features and more background information about the data. 
+
+Features `V_1`, `V_2`, … `V_28` are the principal components obtained with PCA, the only features which have not been transformed with PCA are `Time` and `Amount`. 
+
+- `Time`: the seconds elapsed between each transaction and the first transaction in the dataset. 
+- `Amount`: the transaction Amount.
+- `Class` is the response variable and encoded as `genuine` and `fraud`.
+
+
+```{r}
+# split data
+#set.seed(42)
+#trn_idx = createDataPartition(y = cc_sub$Class, p = 0.8, list = TRUE)
+#cc_trn = cc_sub[trn_idx$Resample1, ]
+#cc_tst = cc_sub[-trn_idx$Resample1, ]
+
+# na proportion detect
+na_prop <- function(x){
+  mean(is.na(x))
+}
+
+# check for missing values
+#sapply(cc_trn, na_prop)
+#sapply(cc_tst, na_prop)
+```
+
+Consider there are no missing values in the dataset, there is no need to handle missing values. Additionally, since `Time` measures the interval between each transaction, a single entry may not have impact on the individual transaction. Taking this into consideration, we excluded `Time` from our selected features. All other available features would be taken into consideration.
+
+The main problem of our credit card dataset is that the data are highly imbalanced. The majority of the transactions are genuine, but only a very small amount of them are fraud. In this case, it will screw up the true negative rate in our analysis. To mitigate the problem, we consider downsampling. We took all the fraud observations into consideration, and sampled genuine data from the original dataset to make up a new subset of data, where the ratio of genuine entries and fraud entries is $60:40$. In the last step, we shuffled our subset credit card data.
+
+```{r, warning=FALSE}
+# select those fraud obs.
+idx = cc$Class == 'fraud'
+cc_fraud = cc[idx, ]
+cc_g = cc[-idx, ]
+
+# create subset of genuine in terms of fraud:genuine = 40:60
+set.seed(42)
+sub_idx = sample(nrow(cc_g), size = 1.5*nrow(cc_fraud))
+cc_2 = cc_g[sub_idx, ]
+
+# get a dataset with fraud:genuine = 40:60
+cc_sub = rbind(cc_fraud, cc_2)
+rm(cc_2, cc_fraud, cc_g)
+
+# shuffle new dataset
+set.seed(42)
+idx = sample(nrow(cc_sub))
+temp = cc_sub[idx, ]
+cc_sub = temp
+
+rm(temp, idx, sub_idx)
+```
+
+
+### Modeling
+
+We follow the machine learning pipeline (train-test split, modeling, cross-validation, etc) to fit a *Gradient Boosting Machines* model and a *random forest* model. Then, consider the imbalanced essence of the data, we compare our models in terms of Area Under The Precision-Recall Curve. The one with larger area would be our final model.
+
+```{r}
+set.seed(42)
+trn_idx = createDataPartition(y = cc_sub$Class, p = 0.8, list = TRUE)
+cc_trn = cc_sub[trn_idx$Resample1, ]
+cc_tst = cc_sub[-trn_idx$Resample1, ]
+```
+
+```{r}
+set.seed(42)
+
+cv_5 = trainControl(method = 'cv', number = 5)
+
+# since subset data `Time` not being useful
+rf_mod = train(form = Class ~ .-Time, 
+                data = cc_trn, 
+                method = 'rf',
+                trControl = cv_5, 
+                verbose = FALSE,
+                tuneLength = 10)
+
+gbm_mod = train(form = Class ~ .-Time, 
+                data = cc_trn, 
+                method = 'gbm',
+                trControl = cv_5, 
+                verbose = FALSE,
+                tuneLength = 10)
+
+```
+
+
+```{r}
+# Convert Class from factor to numeric
+cc_tst[cc_tst$Class == 'genuine', 'Class'] = 0
+cc_tst[cc_tst$Class == 'fraud', 'Class'] = 1
+
+# Convert prediction from factor to numeric
+fraud_or_not <- function(v){
+  ifelse(v == 'fraud', 1, 0)
+}
+
+pred_rf = fraud_or_not(predict(rf_mod, cc_tst))
+pred_gbm = fraud_or_not(predict(gbm_mod, cc_tst))
+```
+
+Area Under The Precision-Recall Curve (random forest):
+
+```{r}
+# Area Under The Precision-Recall Curve (PR AUC) for rf
+MLmetrics::PRAUC(y_pred = pred_rf, 
+                 y_true = cc_tst$Class)
+```
+
+Area Under The Precision-Recall Curve (gradient boosting machine):
+
+```{r}
+# Area Under The Precision-Recall Curve (PR AUC) for gbm
+MLmetrics::PRAUC(y_pred = pred_gbm, 
+                 y_true = cc_tst$Class)
+```
+
+```{r}
+#par(mfrow = c(1,2))
+# ROC Curve (note scores.class0 for positive class)
+#roc_rf <- roc.curve(scores.class0 = pred_rf[pred_rf == 1], scores.class1 = pred_rf[pred_rf == 0], curve = T)
+#roc_gbm <- roc.curve(scores.class0 = pred_gbm[pred_gbm == 1], scores.class1 = pred_gbm[pred_gbm == 0], curve = T)
+#plot(roc_gbm)
+
+# Precision-recall Curve
+#pr_rf <- pr.curve(scores.class0 = pred_rf[pred_rf == 1], scores.class1 = pred_rf[pred_rf == 0], curve = T)
+#pr_gbm <- pr.curve(scores.class0 = pred_gbm[pred_gbm == 1], scores.class1 = pred_gbm[pred_gbm == 0], curve = T)
+
+#plot(pr_gbm)
+```
+
+***
+
+## Results
+
+It turns out that the *random forest* model covers more area under the Precision-Recall Curve than the *Gradient Boosting Machines* model does. The *random forest* model achieved approximately $98\%$ *precision rate* and around $93\%$ *true positive rate*. 
+
+```{r}
+cm = table(actual = cc_tst$Class, predicted = pred_rf)
+
+tp = cm[2,2]
+tn = cm[1,1]
+fp = cm[1,2]
+fn = cm[2,1]
+```
+
+Precision: 
+
+```{r}
+# precision
+tp/(tp + fp)
+```
+
+Recall (true positive rate):
+
+```{r}
+# true positive rate
+tp/(tp + fn)
+```
+
+False positive rate:
+
+```{r}
+# false positive rate
+1 - tp/(tp + fn)
+```
+
+
+***
+
+## Discussion
+
+Although my model gives me approximately $93\%$ *true positive rate* for detecting a transcation is fraud or not, it is somewhat trivial because of the problem of imbalanced. My way of tackling imbalance is through creating a seemingly balanced sample set. Beyond that, area under The Precision-Recall Curve is used as the metric for model selections. However, With limited knowledge about those functions of PRROC package and how to cope with unbalanced data, I can't really explore more at this stage. For future analysis, more optimization and explorations should be taken into considerations 
+
+***
+
+## Appendix
+

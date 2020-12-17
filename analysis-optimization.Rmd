@@ -1,0 +1,107 @@
+---
+title: "Credit Card Fraud Detection - Optimized"
+author: "Yaohong Liang"
+date: "12/17/2020"
+output:
+  html_document:
+    theme: default
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
+```
+
+```{r, load-packages, include = FALSE}
+# load packages
+library(caret)
+library(PRROC)
+```
+
+```{r read-full-data, warning = FALSE, message = FALSE}
+# read full data
+cc = data.table::fread("data/cc.csv.gz")
+```
+
+***
+
+## Abstract
+
+> The analysis shown in this file aims to optimize what we did in the analysis file. We use `caret` package to implement downsampling and use better tuning strategy to speed up the training process. In the end, we ended up with a gradient boosted machine model that has 93% balanced accuracy. 
+
+
+***
+
+## Introduction
+
+It is important that credit card companies are able to recognize fraudulent credit card transactions so that customers are not charged for items that they did not purchase. In this analysis, we will develop a model to detect whether a transaction is fraudulent or not.
+
+
+***
+
+## Methods
+
+### Data
+
+The credit card data comes from *Kaggle*. The dataset itself contains transactions made by credit cards in September 2013 by european cardholders. This dataset presents transactions that occurred in two days, where we have 492 frauds out of 284,807 transactions. The dataset is highly unbalanced, the positive class (frauds) account for 0.172% of all transactions.
+
+It contains only numerical input variables which are the result of a PCA transformation. Unfortunately, due to confidentiality issues, we cannot get the original features and more background information about the data. 
+
+Features `V_1`, `V_2`, … `V_28` are the principal components obtained with PCA, the only features which have not been transformed with PCA are `Time` and `Amount`. 
+
+- `Time`: the seconds elapsed between each transaction and the first transaction in the dataset. 
+- `Amount`: the transaction Amount.
+- `Class` is the response variable and encoded as `genuine` and `fraud`.
+
+As what we've seen in the original analysis, the dataset does not contain any missing value. Therefore, we can focus on modeling part. But we need to make a train/test split on the credit card dataset first.
+
+```{r}
+idx = createDataPartition(cc$Class, p = 0.8, list = FALSE)
+cc_trn = cc[idx, ]
+cc_tst = cc[-idx, ]
+```
+
+
+### Modeling
+
+This time, we used a `caret` functionality to implement down sampling. In addition, we employed one standard error as our tuning criterion. We used gradient boosting machine method for model training. To speed up the training process, we manually specified parameters for tunning.
+
+```{r}
+cv_5_bin_onese = trainControl(method = "cv", 
+                              number = 5, 
+                              classProbs = TRUE, 
+                              summaryFunction = twoClassSummary, 
+                              selectionFunction = "oneSE", 
+                              sampling = "down")
+
+
+gbm_tune = expand.grid(interaction.depth = 1:5, 
+                       n.trees = c(50, 100, 150, 200), 
+                       shrinkage = 0.1, 
+                       n.minobsinnode = 10)
+
+set.seed(42)
+mod_gbm = train(Class ~.-Time, 
+                data = cc_trn, 
+                method = "gbm", 
+                metric = "Sens", 
+                trControl = cv_5_bin_onese, 
+                verbose = FALSE, 
+                tuneGrid = gbm_tune)
+```
+
+***
+
+## Result
+
+Considering our dataset is highly imbalanced, we use another metrics to evaluate the goodness of the model. Here, we use balanced accuracy for evaluation, and it turns out that this metrics attains approximately $93\%$.
+
+```{r}
+pred_gbm = predict(mod_gbm, cc_tst)
+contmat_cc = confusionMatrix(data = pred_gbm, 
+                             reference = factor(cc_tst$Class))
+
+contmat_cc
+```
+
